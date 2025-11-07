@@ -1,0 +1,9 @@
+# Terraform local state
+**/.terraform/
+**/.terraform.lock.hcl
+
+# Backend configuration files (copy from .example)
+terraform/environments/**/backend.hcl
+
+# Terraform plan outputs
+**/*.tfplan

@@ -1,0 +1,33 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${load_balancer_name}"]
+        ],
+        "period": 60,
+        "stat": "p95",
+        "region": "${region}",
+        "title": "ALB Target Response Time (p95)"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/ECS", "ServiceErrorCount", "ClusterName", "${cluster_name}", "ServiceName", "${service_name}"]
+        ],
+        "period": 60,
+        "stat": "Sum",
+        "region": "${region}",
+        "title": "ECS Service Error Count"
+      }
+    }
+  ]
+}

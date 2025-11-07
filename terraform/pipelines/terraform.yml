@@ -1,0 +1,189 @@
+name: terraform
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    env:
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.5
+
+      - name: Verify Terraform availability
+        run: |
+          terraform -version
+          which terraform
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq unzip
+          curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o tfsec
+          sudo install tfsec /usr/local/bin/tfsec
+          pip install checkov
+          sudo apt-get install -y golang-go
+          go env
+
+      - name: Terraform fmt
+        run: terraform fmt -recursive
+
+      - name: Terraform init (dev)
+        run: terraform -chdir=terraform/environments/dev init -backend=false
+
+      - name: Terraform validate (dev)
+        run: terraform -chdir=terraform/environments/dev validate
+
+      - name: Terraform init (stage)
+        run: terraform -chdir=terraform/environments/stage init -backend=false
+
+      - name: Terraform validate (stage)
+        run: terraform -chdir=terraform/environments/stage validate
+
+      - name: Terraform init (prod)
+        run: terraform -chdir=terraform/environments/prod init -backend=false
+
+      - name: Terraform validate (prod)
+        run: terraform -chdir=terraform/environments/prod validate
+
+      - name: Security scanning
+        run: |
+          tfsec terraform
+          checkov -d terraform
+
+      - name: Policy tests
+        run: |
+          opa test terraform/tests/policy
+
+      - name: Unit tests
+        run: |
+          cd terraform/tests
+          go test ./...
+
+  plan:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    env:
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.5
+
+      - name: Write backend configs
+        run: |
+          mkdir -p terraform/environments/dev terraform/environments/stage terraform/environments/prod
+          printf '%s\n' "${{ secrets.DEV_BACKEND_CONFIG }}" > terraform/environments/dev/backend.hcl
+          printf '%s\n' "${{ secrets.STAGE_BACKEND_CONFIG }}" > terraform/environments/stage/backend.hcl
+          printf '%s\n' "${{ secrets.PROD_BACKEND_CONFIG }}" > terraform/environments/prod/backend.hcl
+        shell: bash
+
+      - name: Terraform plan (dev)
+        run: terraform -chdir=terraform/environments/dev init -backend-config=backend.hcl && terraform -chdir=terraform/environments/dev plan -out=plan-dev.tfplan
+
+      - name: Terraform plan (stage)
+        run: terraform -chdir=terraform/environments/stage init -backend-config=backend.hcl && terraform -chdir=terraform/environments/stage plan -out=plan-stage.tfplan
+
+      - name: Terraform plan (prod)
+        run: terraform -chdir=terraform/environments/prod init -backend-config=backend.hcl && terraform -chdir=terraform/environments/prod plan -out=plan-prod.tfplan
+
+      - name: Upload plans
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plans
+          path: |
+            terraform/environments/dev/plan-dev.tfplan
+            terraform/environments/stage/plan-stage.tfplan
+            terraform/environments/prod/plan-prod.tfplan
+
+      - name: Discover rendered dashboards
+        id: dashboards
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(terraform/environments/dev/*.json terraform/environments/stage/*.json terraform/environments/prod/*.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "${files[@]}"
+          {
+            echo "paths<<EOF"
+            printf '%s\n' "${files[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload rendered dashboards
+        if: steps.dashboards.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboards-json
+          path: ${{ steps.dashboards.outputs.paths }}
+
+  apply:
+    needs: plan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    environment: production
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.5
+
+      - name: Write backend configs
+        run: |
+          mkdir -p terraform/environments/dev terraform/environments/stage terraform/environments/prod
+          printf '%s\n' "${{ secrets.DEV_BACKEND_CONFIG }}" > terraform/environments/dev/backend.hcl
+          printf '%s\n' "${{ secrets.STAGE_BACKEND_CONFIG }}" > terraform/environments/stage/backend.hcl
+          printf '%s\n' "${{ secrets.PROD_BACKEND_CONFIG }}" > terraform/environments/prod/backend.hcl
+        shell: bash
+
+      - name: Terraform init
+        run: |
+          terraform -chdir=terraform/environments/dev init -backend-config=backend.hcl
+          terraform -chdir=terraform/environments/stage init -backend-config=backend.hcl
+          terraform -chdir=terraform/environments/prod init -backend-config=backend.hcl
+
+      - name: Terraform apply
+        run: |
+          terraform -chdir=terraform/environments/dev apply -auto-approve
+          terraform -chdir=terraform/environments/stage apply -auto-approve
+          terraform -chdir=terraform/environments/prod apply -auto-approve

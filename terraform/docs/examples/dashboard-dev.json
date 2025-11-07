@@ -1,0 +1,33 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/ECS", "CPUUtilization", "ClusterName", "dev-cluster", "ServiceName", "dev-service"]
+        ],
+        "period": 60,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "ECS Service CPU Utilization"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/ECS", "MemoryUtilization", "ClusterName", "dev-cluster", "ServiceName", "dev-service"]
+        ],
+        "period": 60,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "ECS Service Memory Utilization"
+      }
+    }
+  ]
+}

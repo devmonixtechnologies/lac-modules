@@ -1,0 +1,17 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/ECS", "ServiceDesiredCount", "ClusterName", "${cluster_name}", "ServiceName", "${service_name}"]
+        ],
+        "region": "${region}",
+        "stat": "Average",
+        "title": "CustomWidgetMetric"
+      }
+    }
+  ]
+}
