@@ -1,0 +1,511 @@
+name: Advanced Terraform CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    paths: ['terraform/**']
+  pull_request:
+    branches: [main]
+    paths: ['terraform/**']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - stage
+        - prod
+      auto_apply:
+        description: 'Auto-apply changes'
+        required: false
+        default: false
+        type: boolean
+      terraform_version:
+        description: 'Terraform version'
+        required: false
+        default: '1.6.0'
+        type: string
+
+env:
+  TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+  TF_VERSION: ${{ github.event.inputs.terraform_version || '1.6.0' }}
+
+jobs:
+  # Enhanced validation job
+  validate:
+    name: Enhanced Validation
+    runs-on: ubuntu-latest
+    outputs:
+      terraform_version: ${{ steps.setup.outputs.terraform_version }}
+      changed_files: ${{ steps.changes.outputs.files }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Terraform
+        id: setup
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Get changed files
+        id: changes
+        uses: dorny/paths-filter@v2
+        with:
+          filters: |
+            terraform:
+              - 'terraform/**/*.tf'
+              - 'terraform/**/*.tfvars'
+              - 'terraform/**/*.hcl'
+
+      - name: Terraform Format Check
+        if: steps.changes.outputs.terraform == 'true'
+        run: terraform fmt -recursive -check -diff terraform/
+
+      - name: Terraform Initialization
+        if: steps.changes.outputs.terraform == 'true'
+        run: |
+          for env in dev stage prod; do
+            echo "Initializing $env environment..."
+            cd terraform/environments/$env
+            terraform init -backend=false
+            cd - > /dev/null
+          done
+
+      - name: Terraform Validation
+        if: steps.changes.outputs.terraform == 'true'
+        run: |
+          for env in dev stage prod; do
+            echo "Validating $env environment..."
+            cd terraform/environments/$env
+            terraform validate
+            cd - > /dev/null
+          done
+
+      - name: Checkov Security Scan
+        if: steps.changes.outputs.terraform == 'true'
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/
+          framework: terraform
+          skip_check: CKV_AWS_20,CKV_AWS_21
+          output_format: sarif
+          output_file_path: reports/checkov-results.sarif
+
+      - name: Tfsec Security Scan
+        if: steps.changes.outputs.terraform == 'true'
+        uses: aquasecurity/tfsec-action@v1.0.2
+        with:
+          working_directory: terraform/
+          additional_args: --exclude-downloaded-modules --concise-output
+
+      - name: OPA Policy Tests
+        if: steps.changes.outputs.terraform == 'true'
+        run: |
+          cd terraform
+          opa test tests/policy -v
+          cd - > /dev/null
+
+      - name: Pre-commit Checks
+        if: steps.changes.outputs.terraform == 'true'
+        uses: pre-commit/action@v3.0.0
+
+      - name: Upload SARIF Results
+        if: steps.changes.outputs.terraform == 'true'
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: reports/checkov-results.sarif
+
+  # Advanced testing job
+  test:
+    name: Advanced Testing
+    runs-on: ubuntu-latest
+    needs: validate
+    if: needs.validate.outputs.changed_files == 'true'
+    strategy:
+      matrix:
+        environment: [dev, stage, prod]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ needs.validate.outputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Run Terratest Suite
+        run: |
+          cd terraform/tests
+          go test -v -timeout 30m ./...
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+
+      - name: Generate Test Report
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Terratest Results
+          path: terraform/tests/**/test-results.xml
+          reporter: java-junit
+
+  # Cost estimation job
+  cost-estimate:
+    name: Cost Estimation
+    runs-on: ubuntu-latest
+    needs: validate
+    if: needs.validate.outputs.changed_files == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ needs.validate.outputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Generate Cost Estimate
+        id: cost
+        run: |
+          # Install infracost
+          curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | sh
+          
+          # Generate cost estimate
+          cd terraform/environments/dev
+          terraform init -backend=false
+          terraform plan -out=tfplan
+          
+          infracost breakdown --path=tfplan --format=json --output-file=cost-estimate.json
+          
+          # Extract monthly cost
+          MONTHLY_COST=$(jq -r '.totalMonthlyCost' cost-estimate.json)
+          echo "monthly_cost=$MONTHLY_COST" >> $GITHUB_OUTPUT
+          echo "Estimated monthly cost: $MONTHLY_COST"
+
+      - name: Comment PR with Cost Estimate
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const cost = '${{ steps.cost.outputs.monthly_cost }}';
+            const comment = `
+            ## 💰 Cost Estimate
+            
+            **Estimated Monthly Cost:** $${cost}
+            
+            This cost estimate is based on the current infrastructure configuration.
+            Actual costs may vary based on usage and AWS pricing changes.
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Upload Cost Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: cost-estimate
+          path: terraform/environments/dev/cost-estimate.json
+
+  # Plan job with enhanced features
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    needs: [validate, test]
+    if: needs.validate.outputs.changed_files == 'true'
+    strategy:
+      matrix:
+        environment: [dev, stage, prod]
+    environment:
+      name: ${{ matrix.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ needs.validate.outputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Initialize Terraform
+        run: |
+          cd terraform/environments/${{ matrix.environment }}
+          terraform init -backend-config=${{ secrets[matrix.environment == 'dev' && 'DEV_BACKEND_CONFIG' || matrix.environment == 'stage' && 'STAGE_BACKEND_CONFIG' || 'PROD_BACKEND_CONFIG'] }}
+
+      - name: Generate Terraform Plan
+        id: plan
+        run: |
+          cd terraform/environments/${{ matrix.environment }}
+          terraform plan -out=tfplan -detailed-exitcode
+          echo "plan_exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Save Plan File
+        if: steps.plan.outputs.plan_exit_code == '0' || steps.plan.outputs.plan_exit_code == '2'
+        uses: actions/upload-artifact@v3
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: terraform/environments/${{ matrix.environment }}/tfplan
+
+      - name: Generate Plan Summary
+        if: steps.plan.outputs.plan_exit_code == '0' || steps.plan.outputs.plan_exit_code == '2'
+        run: |
+          cd terraform/environments/${{ matrix.environment }}
+          terraform show -json tfplan > plan.json
+          jq -r '.configuration.root_module.resources[] | select(.mode == "managed") | "\(.type): \(.name)"' plan.json > resources.txt
+
+      - name: Comment PR with Plan Summary
+        if: github.event_name == 'pull_request' && matrix.environment == 'dev'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const resources = fs.readFileSync('terraform/environments/dev/resources.txt', 'utf8');
+              const comment = `
+              ## 📋 Terraform Plan Summary
+              
+              **Environment:** dev
+              
+              **Resources to be managed:**
+              \`\`\`
+              ${resources}
+              \`\`\`
+              
+              Full plan details are available in the workflow artifacts.
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.log('Could not read plan summary:', error);
+            }
+
+  # Apply job with enhanced safety checks
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    needs: [validate, test, plan]
+    if: |
+      github.ref == 'refs/heads/main' && 
+      github.event_name != 'pull_request' &&
+      (github.event.inputs.auto_apply == 'true' || github.event.inputs.auto_apply == '')
+    strategy:
+      matrix:
+        environment: [dev, stage, prod]
+    environment:
+      name: ${{ matrix.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ needs.validate.outputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Download Plan File
+        uses: actions/download-artifact@v3
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: terraform/environments/${{ matrix.environment }}
+
+      - name: Initialize Terraform
+        run: |
+          cd terraform/environments/${{ matrix.environment }}
+          terraform init -backend-config=${{ secrets[matrix.environment == 'dev' && 'DEV_BACKEND_CONFIG' || matrix.environment == 'stage' && 'STAGE_BACKEND_CONFIG' || 'PROD_BACKEND_CONFIG'] }}
+
+      - name: Apply Terraform Changes
+        run: |
+          cd terraform/environments/${{ matrix.environment }}
+          terraform apply tfplan
+
+      - name: Generate State Summary
+        run: |
+          cd terraform/environments/${{ matrix.environment }}
+          terraform show -json terraform.tfstate > state.json
+          jq -r '.values.root_module.resources[] | "\(.type): \(.name)"' state.json > deployed-resources.txt
+
+      - name: Update Deployment Status
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const status = '${{ job.status }}';
+            const environment = '${{ matrix.environment }}';
+            
+            const comment = `
+            ## 🚀 Deployment Status
+            
+            **Environment:** ${environment}
+            **Status:** ${status}
+            **Time:** ${new Date().toISOString()}
+            
+            Deployment completed successfully! 🎉
+            `;
+            
+            if (status === 'success') {
+              github.rest.issues.createComment({
+                issue_number: context.issue.number || 0,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+  # Drift detection job
+  drift-detection:
+    name: Drift Detection
+    runs-on: ubuntu-latest
+    needs: apply
+    if: success()
+    strategy:
+      matrix:
+        environment: [prod]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ needs.validate.outputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Initialize Terraform
+        run: |
+          cd terraform/environments/${{ matrix.environment }}
+          terraform init -backend-config=${{ secrets[matrix.environment == 'dev' && 'DEV_BACKEND_CONFIG' || matrix.environment == 'stage' && 'STAGE_BACKEND_CONFIG' || 'PROD_BACKEND_CONFIG'] }}
+
+      - name: Check for Drift
+        run: |
+          cd terraform/environments/${{ matrix.environment }}
+          terraform plan -detailed-exitcode -out=drift-plan
+          if [ $? -eq 2 ]; then
+            echo "Drift detected!"
+            terraform show drift-plan > drift-report.txt
+            echo "drift_detected=true" >> $GITHUB_ENV
+          else
+            echo "No drift detected"
+            echo "drift_detected=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create Drift Issue
+        if: env.drift_detected == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const driftReport = fs.readFileSync('terraform/environments/prod/drift-report.txt', 'utf8');
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Infrastructure Drift Detected',
+              body: `
+              ## Infrastructure Drift Detected
+              
+              **Environment:** prod
+              **Time:** ${new Date().toISOString()}
+              
+              The following drift was detected between the Terraform state and actual infrastructure:
+              
+              \`\`\`
+              ${driftReport}
+              \`\`\`
+              
+              Please review and address this drift to maintain infrastructure consistency.
+              `,
+              labels: ['drift', 'infrastructure', 'high-priority']
+            });
+
+  # Cleanup job
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [validate, test, plan, apply, drift-detection]
+    if: always()
+    steps:
+      - name: Cleanup Artifacts
+        if: needs.apply.result != 'success'
+        run: |
+          echo "Cleaning up failed deployment artifacts..."
+          # Add any cleanup logic here
+
+      - name: Notify Team
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Pipeline Failure',
+              body: `
+              The Terraform pipeline failed at ${new Date().toISOString()}
+              
+              **Failed Jobs:**
+              - Validate: ${{ needs.validate.result }}
+              - Test: ${{ needs.test.result }}
+              - Plan: ${{ needs.plan.result }}
+              - Apply: ${{ needs.apply.result }}
+              
+              Please investigate the failure and take corrective action.
+              `,
+              labels: ['pipeline-failure', 'urgent']
+            })

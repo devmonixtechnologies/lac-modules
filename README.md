@@ -1,7 +1,45 @@
 - `terraform/docs/examples/dashboard-dev.json`: Example rendered CloudWatch dashboard body for documentation/testing references.
-# LAC Modules
+# LAC Modules v2.0
 
 Production-ready Infrastructure as Code (IaC) building blocks for Landing & Application Components (LAC). The repository provides modular Terraform for AWS foundations, environment compositions, observability, governance, and CI automation so platform teams can standardise delivery across dev/stage/prod.
+
+## 🚀 What's New in v2.0
+
+### Advanced Observability Stack
+- **Prometheus & Grafana Integration**: Full monitoring stack with custom dashboards and alerts
+- **Distributed Tracing**: AWS X-Ray integration for end-to-end tracing
+- **Enhanced Log Processing**: Advanced log aggregation with Lambda and Firehose processors
+- **Multi-Cloud Monitoring**: Support for Azure and GCP monitoring services
+
+### Enterprise Security & Compliance
+- **AWS Security Hub**: Comprehensive security posture management with automated remediation
+- **GuardDuty Integration**: Advanced threat detection and automated response
+- **Macie Data Protection**: Automated data discovery and classification
+- **Enhanced IAM Controls**: Fine-grained access controls and audit logging
+
+### Multi-Cloud Support
+- **Azure Networking**: Complete VNet, subnet, and security group management
+- **GCP Networking**: Advanced VPC, firewall, and routing configurations
+- **Hybrid Deployments**: Cross-cloud connectivity and peering solutions
+- **Multi-Provider Templates**: Unified interfaces for multi-cloud deployments
+
+### Advanced Compute Options
+- **EKS Clusters**: Full Kubernetes cluster management with add-ons
+- **Spot Instance Optimization**: Automated cost optimization with spot instances
+- **Container Security**: Enhanced security scanning and runtime protection
+- **Auto-Scaling Intelligence**: Predictive scaling based on metrics
+
+### Cost Optimization & Governance
+- **Cost Anomaly Detection**: Real-time cost monitoring and alerts
+- **Automated Budget Management**: Dynamic budget enforcement and notifications
+- **Resource Tagging Strategy**: Comprehensive cost allocation and reporting
+- **Optimization Engine**: Automated resource rightsizing and cleanup
+
+### Enhanced CI/CD Pipeline
+- **Advanced Validation**: Multi-tool security scanning and policy enforcement
+- **Cost Estimation**: Pre-deployment cost analysis and impact assessment
+- **Drift Detection**: Automated infrastructure drift monitoring and remediation
+- **GitOps Integration**: Full GitOps workflow with automated deployments
 
 ---
 
@@ -26,19 +64,27 @@ Production-ready Infrastructure as Code (IaC) building blocks for Landing & Appl
 terraform/
   modules/                # Reusable Terraform modules grouped by domain
     networking/           # VPC, subnet sets, and networking primitives
-    security/             # IAM baseline controls
-    compute/              # ECS cluster/service modules
-    observability/        # Logging, alarms, dashboards, log processors
+    security/             # IAM baseline controls, Security Hub, GuardDuty
+    compute/              # ECS, EKS cluster/service modules with advanced features
+    observability/        # Logging, alarms, dashboards, log processors, Prometheus
       logging/            # CloudWatch log groups & subscription filters
       alarms/             # ECS CPU & memory alarms
       dashboards/         # Dashboard templating utilities
       log_processor_lambda/   # Managed Lambda log processor
       log_processor_firehose/ # Kinesis Firehose delivery stream
+      prometheus/         # Prometheus & Grafana monitoring stack (NEW)
+    governance/           # Cost optimization, budgeting, compliance (NEW)
+      cost-optimization/  # Cost anomaly detection and budgets
+    multi-cloud/          # Multi-cloud provider support (NEW)
+      azure-networking/   # Azure VNet and networking resources
+      gcp-networking/     # GCP VPC and networking resources
   environments/           # Composable stacks (global, dev, stage, prod)
   tests/                  # Terratest suites, fixtures, and policies
   pipelines/              # GitHub Actions workflows for validation/plan/apply
+    terraform.yml         # Original CI/CD pipeline
+    advanced-terraform.yml # Enhanced pipeline with cost estimation (NEW)
   docs/                   # Architecture, observability, and module guidelines
-  examples/               # Example configurations (e.g. Lambda processor)
+  examples/               # Example configurations (e.g. Lambda processor, EKS)
 ```
 
 ---
@@ -60,13 +106,19 @@ terraform/
 | `modules/networking/vpc` | Creates VPC with optional flow logs and additional CIDR blocks. |
 | `modules/networking/subnet_set` | Generates tiered subnets (public/private) per AZ. |
 | `modules/security/iam-baseline` | Applies account guardrails (password policy, Access Analyzer). |
+| `modules/security/security-hub` | AWS Security Hub, GuardDuty, and Macie integration (NEW). |
 | `modules/compute/ecs_cluster` | Provisions ECS cluster with Service Connect & Exec options. |
 | `modules/compute/ecs_service` | Defines Fargate services with deployment controls and networking. |
+| `modules/compute/eks_cluster` | Full EKS cluster management with add-ons and security (NEW). |
 | `modules/observability/logging` | CloudWatch log group plus optional subscription filter and IAM role automation. |
 | `modules/observability/alarms` | ECS CPU/memory alarms with configurable thresholds/actions. |
 | `modules/observability/dashboards` | Renders dashboards from JSON templates and merges tagging. |
+| `modules/observability/prometheus` | Prometheus & Grafana monitoring stack with advanced features (NEW). |
 | `modules/observability/log_processor_lambda` | Packages Lambda code (from directory or pre-built zip), manages IAM role/policies, and returns ARNs for log subscriptions. |
 | `modules/observability/log_processor_firehose` | Creates Firehose delivery stream targeting S3 with buffering, compression, and role management. |
+| `modules/governance/cost-optimization` | Cost anomaly detection, budgets, and automated optimization (NEW). |
+| `modules/multi-cloud/azure-networking` | Azure VNet, subnets, NSGs, and VPN gateways (NEW). |
+| `modules/multi-cloud/gcp-networking` | GCP VPC, subnets, firewalls, and routing (NEW). |
 
 See `terraform/docs/` for deep dives into module usage and architectural decisions.
 
